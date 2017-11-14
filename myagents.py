@@ -114,7 +114,7 @@ def GetMissionInstance( mission_type, mission_seed, agent_type):
         'small':   60000,
         'medium': 240000,
         'large':  960000,
-        'helper': 200000,
+        'helper': 100000,
     }
 
     # Number of intermediate rewards
@@ -358,59 +358,14 @@ class AgentSimple:
         self.solution_report.setMissionType(self.mission_type)
         self.solution_report.setMissionSeed(self.mission_seed)
 
-    def add_node(self, graph, block, i, j):
-        code = str(i) + "_" + str(j)
-        start = False
-        end = False
-        if block == 'emerald_block':
-            start = True
-        elif block == 'redstone_block':
-            end = True
-        node = graph.add_node(code)
-        #Add paths
-        if (graph.has_node(str(i-1) + "_" + str(j))):
-            graph.add_edge(code, str(i-1) + "_" + str(j))
-        if (graph.has_node(str(i) + "_" + str(j-1))):
-            graph.add_edge(code, str(i) + "_" + str(j-1))
-
-    def make_graph(self, temp_grid):
-        start = end = None
-        #Change to 2d array
-        grid = []
-        i = 0
-        while (i < len(temp_grid)/21):
-            grid.append(temp_grid[i*21:(i+1)*21-1])
-            i = i + 1
-
-        #Create graph
-        graph = nx.Graph()
-        i = 0
-        j = 0
-        while (i < len(grid)):
-            while (j < len(grid[i])):
-                #If to be added, add, then add paths
-                if (grid[i][j] in ['glowstone', 'emerald_block', 'redstone_block']):
-                    self.add_node(graph, grid[i][j], i, j)
-                #If start or end
-                if (grid[i][j] == 'emerald_block'):
-                    start = str(i) + "_" + str(j)
-                if (grid[i][j] == 'redstone_block'):
-                    end = str(i) + "_" + str(j)
-
-                j = j + 1
-            j = 0
-            i = i + 1
-
-        return [graph, start, end]
-
     def gen_actions(self, path):
         actions = []
-        z,x = path[0].split('_')
-        z, x = int(z), int(x)
+        x,z = path[0].split('_')
+        x, z = int(x), int(z)
         del path[0]
         for move in path:
-            z2,x2 = move.split('_')
-            z2,x2 = int(z2), int(x2)
+            x2,z2 = move.split('_')
+            x2,z2 = int(x2), int(z2)
 
             #Move north - in direction of negative z
             if (z2 < z):
@@ -441,8 +396,15 @@ class AgentSimple:
 
         reward_cumulative = 0.0
 
-        graph = None
+        #Graph representing state space
+        graph = self.state_space['graph']
+        #Start node
+        start = self.state_space['start']
+        #End node
+        end = self.state_space['end']
+        #Path to follow
         path = None
+        #Path in form of actions to take
         action_q = None
 
         # Main loop:
@@ -450,10 +412,26 @@ class AgentSimple:
 
         while state_t.is_mission_running:
             # Wait 0.5 sec
-            time.sleep(0.5)
+            time.sleep(1)
 
             # Get the world state
             state_t = self.agent_host.getWorldState()
+
+            #If no path generated then make one
+            if (path == None):
+                def heuristic(a, b):
+                    print(a)
+                    print(b)
+                    if 'in_path' in graph.node[a]:
+                        return 0
+                    else:
+                        graph.node[a]['in_path'] = True
+                        print(graph.node[a]['rewards']*(-1))
+                        return (graph.node[a]['rewards']*(-1))
+                path = nx.astar.astar_path(graph, start, end, heuristic=heuristic)
+                print(nx.astar.astar_path_length(graph, start, end, heuristic=heuristic))
+                action_q = self.gen_actions(path)
+                print(action_q)
 
             #Take action
             if state_t.is_mission_running:
@@ -495,13 +473,6 @@ class AgentSimple:
                 # Orcale - get grid
                 temp_grid = oracle.get(u'grid', 0)
 
-                #If no graph created yet - create one and find path
-                if graph == None:
-                    ans = self.make_graph(temp_grid)
-                    graph, start, end = ans
-                    path = nx.astar.astar_path(graph, start, end, heuristic=None)
-                    action_q = self.gen_actions(path)
-
                 # GPS-like sensor
                 xpos = oracle.get(u'XPos', 0)            # Position in 2D plane, 1st axis
                 zpos = oracle.get(u'ZPos', 0)            # Position in 2D plane, 2nd axis (yes Z!)
@@ -526,7 +497,6 @@ class AgentSimple:
 
         return
 
-
 #--------------------------------------------------------------------------------------
 #-- This class implements a basic, suboptimal Random Agent. The purpurpose is to provide a baseline for other agent to beat. --#
 class AgentRandom:
@@ -546,13 +516,14 @@ class AgentRandom:
         self.solution_report.setMissionType(self.mission_type)
         self.solution_report.setMissionSeed(self.mission_seed)
 
+
     def __ExecuteActionForRandomAgentWithNoisyTransitionModel__(self, idx_request_action, noise_level):
         """ Creates a well-defined transition model with a certain noise level """
         n = len(self.AGENT_ALLOWED_ACTIONS)
         pp = noise_level/(n-1) * np.ones((n,1))
         pp[idx_request_action] = 1.0 - noise_level
         idx_actual = np.random.choice(n, 1, p=pp.flatten()) # sample from the distrbution of actions
-        actual_action = self.AGENT_ALLOWED_ACTIONS[int(idx_actual)]
+        actual_action = self.AGENT_ALLOWED_ACTIONS[int(idx_actual)] #int(idx_actual)
         self.agent_host.sendCommand(actual_action)
         return actual_action
 
@@ -588,7 +559,8 @@ class AgentRandom:
                 print("Requested Action:",self.AGENT_ALLOWED_ACTIONS[actionIdx])
 
                 # Now try to execute the action givne a noisy transition model
-                actual_action = self.__ExecuteActionForRandomAgentWithNoisyTransitionModel__(actionIdx, 0.05);
+                # Set at 0 noise just now as actions are noise free
+                actual_action = self.__ExecuteActionForRandomAgentWithNoisyTransitionModel__(actionIdx, 0.00);
                 print("Actual Action:",actual_action)
 
                 #Add action to solution report
@@ -639,7 +611,6 @@ class AgentRandom:
 
         return
 
-
 #--------------------------------------------------------------------------------------
 #-- This class implements a helper Agent for deriving the state-space representation ---#
 class AgentHelper:
@@ -655,10 +626,22 @@ class AgentHelper:
         self.agent_port = agent_port
         self.mission_seed = mission_seed
         self.mission_type = mission_type
-        self.state_space = StateSpace()
+        self.state_space = {}
         self.solution_report = solution_report;   # Python is call by reference !
         self.solution_report.setMissionType(self.mission_type)
         self.solution_report.setMissionSeed(self.mission_seed)
+
+
+    def add_node(self, graph, block, i, j):
+        code = str(i) + "_" + str(j)
+        node = graph.add_node(code)
+        #Add paths
+        if (graph.has_node(str(i-1) + "_" + str(j))):
+            graph.add_edge(code, str(i-1) + "_" + str(j), weight=9)
+        if (graph.has_node(str(i) + "_" + str(j-1))):
+            graph.add_edge(code, str(i) + "_" + str(j-1), weight=9)
+        return code
+
 
     def run_agent(self):
         """ Run the Helper agent to get the state-space """
@@ -678,147 +661,95 @@ class AgentHelper:
         #-- Get the state of the world along with internal agent state...--#
         state_t = self.agent_host.getWorldState()
 
-        print(state_t)
-        print ("herer")
         #-- Get a state-space model by observing the Orcale/GridObserver--#
         if state_t.is_mission_running:
             #-- Make sure we look in the right direction when observing the surrounding (otherwise the coordinate system will rotated by the Yaw !) --#
             # Look East (towards +x (east) and +z (south) on the right, i.e. a std x,y coordinate system) yaw=-90
             self.agent_host.sendCommand("setPitch 20")
             time.sleep(1)
-            self.agent_host.sendCommand("setYaw -90")
+            self.agent_host.sendCommand("setYaw 0")
             time.sleep(1)
 
             #-- Basic map --#
             state_t = self.agent_host.getWorldState()
 
-            if state_t.number_of_observations_since_last_state == 0:
-                time.sleep(1)
-            else:
-                print(state_t.observations)
-                msg = state_t.observations[-1].text                 # Get the details for the last observed state
-                print("###" + msg + "###")
-                oracle_and_internal = json.loads(msg)               # Parse the Oracle JSON
-                grid = oracle_and_internal.get(u'grid', 0)
-                xpos = oracle_and_internal.get(u'XPos', 0)
-                zpos = oracle_and_internal.get(u'ZPos', 0)
-                ypos = oracle_and_internal.get(u'YPos', 0)
-                yaw  = oracle_and_internal.get(u'Yaw', 0)
-                pitch = oracle_and_internal.get(u'Pitch', 0)
-
-                #-- Parste the JOSN string, Note there are better ways of doing this! --#
-                full_state_map_raw = str(grid)
-                full_state_map_raw=full_state_map_raw.replace("[","")
-                full_state_map_raw=full_state_map_raw.replace("]","")
-                full_state_map_raw=full_state_map_raw.replace("u'","")
-                full_state_map_raw=full_state_map_raw.replace("'","")
-                full_state_map_raw=full_state_map_raw.replace(" ","")
-                aa=full_state_map_raw.split(",")
-                vocs = list(set(aa))
-                for word in vocs:
-                    for i in range(0,len(aa)):
-                        if aa[i]==word :
-                            aa[i] = vocs.index(word)
-
-                X = np.asarray(aa);
-                nn = int(math.sqrt(X.size))
-                X = np.reshape(X, [nn,nn]) # Note: this matrix/table is index as z,x
-
-                #-- Visualize the discrete state-space --#
-                if self.DO_PLOT:
-                    print(yaw)
-                    plt.figure(1)
-                    imgplot = plt.imshow(X.astype('float'),interpolation='none')
-                    plt.show()
-
+            #Wait for percepts
+            while state_t.number_of_observations_since_last_state == 0:
+                state_t = self.agent_host.getWorldState()
                 time.sleep(1)
 
-                #-- Define the unique states available --#
-                state_wall = vocs.index("stained_hardened_clay")
-                state_impossible = vocs.index("stone")
-                state_initial = vocs.index("emerald_block")
-                state_goal = vocs.index("redstone_block")
+            #Get coords and map of state state_space
+            msg = state_t.observations[-1].text
+            oracle_and_internal = json.loads(msg)
+            temp_grid = oracle_and_internal.get(u'grid', 0)
+            xpos = int(oracle_and_internal.get(u'XPos', 0))
+            ypos = int(oracle_and_internal.get(u'YPos', 0))
+            zpos = int(oracle_and_internal.get(u'ZPos', 0))
 
-                #-- Extract state-space --#
-                offset_x = 100-math.floor(xpos);
-                offset_z = 100-math.floor(zpos);
+            #Change grid to 2d array
+            i = 0
+            grid = []
 
-                state_space_locations = {}; # create a dict
+            col_size = int(math.sqrt(len(temp_grid)))
+            while (i < col_size):
+                row = temp_grid[(i*col_size):((i+1)*col_size)]
+                grid.append([])
+                grid[i] = row
+                i = i + 1
 
-                for i_z in range(0,len(X)):
-                    for j_x in range(0,len(X)):
-                        if X[i_z,j_x] != state_impossible and X[i_z,j_x] != state_wall:
-                            state_id = "S_"+str(int(j_x - offset_x))+"_"+str(int(i_z - offset_z) )
-                            state_space_locations[state_id] = (int(j_x- offset_x),int(i_z - offset_z) )
-                            if X[i_z,j_x] == state_initial:
-                                state_initial_id = state_id
-                                loc_start = state_space_locations[state_id]
-                            elif X[i_z,j_x] == state_goal:
-                                state_goal_id = state_id
-                                loc_goal = state_space_locations[state_id]
+            #Create graph
+            graph = nx.Graph()
+            i = 0
+            j = 0
+            start = end = None
+            while (i < col_size):
+                row = grid[i]
+                while (j < col_size):
+                    cell = row[j]
 
-                #-- Generate state / action list --#
-                # First define the set of actions in the defined coordinate system
-                actions = {"west": [-1,0],"east": [+1,0],"north": [0,-1], "south": [0,+1]}
-                state_space_actions = {}
-                for state_id in state_space_locations:
-                    possible_states = {}
-                    for action in actions:
-                        #-- Check if a specific action is possible --#
-                        delta = actions.get(action)
-                        state_loc = state_space_locations.get(state_id)
-                        state_loc_post_action = [state_loc[0]+delta[0],state_loc[1]+delta[1]]
+                    x_val =(j-int((col_size/2))) + xpos
+                    z_val =(i-int((col_size/2))) + zpos
+                    #If to be added, add, then add paths
+                    if (cell in ['glowstone', 'emerald_block', 'redstone_block']):
+                        node = self.add_node(graph, cell, x_val, z_val)
+                        if (cell == 'emerald_block'):
+                            start = node
+                        if (cell == 'redstone_block'):
+                            end = node
 
-                        #-- Check if the new possible state is in the state_space, i.e., is accessible --#
-                        state_id_post_action = "S_"+str(state_loc_post_action[0])+"_"+str(state_loc_post_action[1])
-                        if state_space_locations.get(state_id_post_action) != None:
-                            possible_states[state_id_post_action] = 1
+                    j = j + 1
+                j = 0
+                i = i + 1
 
-                    #-- Add the possible actions for this state to the global dict --#
-                    state_space_actions[state_id] = possible_states
+            #For each node, teleport to it and check if rewards recieved
+            for node in graph.nodes:
+                graph.node[node]['rewards'] = -9
+                if not (str(node) == end):
+                    x_val = node.split('_')[0]
+                    z_val = node.split('_')[1]
+                    #Teleport
+                    agent_host.sendCommand("tp " + str(x_val) + ".5 " + str(ypos) + ".5 " + str(z_val) + ".5")
+                    #Collect rewards
+                    state_t = self.agent_host.getWorldState()
+                    for reward_t in state_t.rewards:
+                        graph.node[node]['rewards'] = graph.node[node]['rewards'] + reward_t.getValue()
+                    time.sleep(1)
 
-                #-- Kill the agent/mission --#
-                agent_host.sendCommand("tp " + str(0 ) + " " + str(0) + " " + str(0))
-                time.sleep(2)
+            #Finish mission
+            agent_host.sendCommand("tp " + str(0 ) + " " + str(0) + " " + str(0))
+            time.sleep(0.5)
 
-                #-- Save the info an instance of the StateSpace class --
-                self.state_space.state_actions = state_space_actions
-                self.state_space.state_locations = state_space_locations
-                self.state_space.start_id = state_initial_id
-                self.state_space.start_loc = loc_start
-                self.state_space.goal_id  = state_goal_id
-                self.state_space.goal_loc = loc_goal
+            #-- Save the info  --
+            self.state_space['graph'] = graph
+            self.state_space['start'] = start
+            self.state_space['end'] = end
 
-                #-- Reward location and values --#
-                # OPTIONAL: If you want to account for the intermediate rewards
-                # in the Random/Simple agent (or in your analysis) you can
-                # obtain ground-truth by teleporting with the tp command
-                # to all states and detect whether you recieve recieve a
-                # diamond or not using the inventory field in the oracle variable
-                #
-                # As default the state_space_rewards is just set to contain
-                # the goal state which is found above.
-                #
-                state_space_rewards = {}
-                state_space_rewards[state_goal_id] = reward_goal
-
-                # HINT: You can insert your own code for getting
-                # the location of the intermediate rewards
-                # and populate the state_space_rewards dict
-                # with more information (optional).
-                # WARNING: This is a bit tricky, please consult tutors before starting
-
-                #-- Set the values in the state_space container --#
-                self.state_space.reward_states = state_space_rewards
-                self.state_space.reward_states_n = n_intermediate_rewards + 1
-                self.state_space.reward_timeout = reward_timeout
-                self.state_space.timeout = timeout
-                self.state_space.reward_sendcommand = reward_sendcommand
-            #else:
-            #    self.state_space = None
-                #-- End if observations --#
-
+        #Wait if mission has not finished
+        while state_t.is_mission_running:
+                state_t = self.agent_host.getWorldState()
+                time.sleep(5)
         return
+
 
 # --------------------------------------------------------------------------------------------
 #-- The main entry point if you run the module as a script--#
@@ -905,11 +836,11 @@ if __name__ == "__main__":
 
         #-- Observe the full state space a prior i (only allowed for the simple agent!) ? --#
         if args.agentname.lower()=='simple':
-            #print('Get state-space representation using a AgentHelper...[note in v0.30 there is now an faster way of getting the state-space ]')
-            #helper_solution_report = SolutionReport()
-            #helper_agent = AgentHelper(agent_host,args.malmoport,args.missiontype,i_training_seed, helper_solution_report, None)
-            #helper_agent.run_agent()
-            helper_agent = None
+            print('Get state-space representation using a AgentHelper...[note in v0.30 there is now an faster way of getting the state-space ]')
+            helper_solution_report = SolutionReport()
+            helper_agent = AgentHelper(agent_host,args.malmoport,args.missiontype,i_training_seed, helper_solution_report, None)
+            helper_agent.run_agent()
+            time.sleep(2)
         else:
             helper_agent = None
 
