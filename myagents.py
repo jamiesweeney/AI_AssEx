@@ -4,7 +4,9 @@
 
  Tested with Python 2.7
 
- Solution Template (revision a)
+ Team 30
+ Cameron Harper
+ Jamie Sweeney
 """
 
 #----------------------------------------------------------------------------------------------------------------#
@@ -96,7 +98,6 @@ class StateSpace(object):
         self.reward_sendcommand = None
         self.reward_timeout = None
         self.timeout = None
-
 
 #----------------------------------------------------------------------------------------------------------------#
 def GetMissionInstance( mission_type, mission_seed, agent_type):
@@ -288,7 +289,6 @@ def init_mission(agent_host, port=0, agent_type='Unknown',mission_type='Unknown'
     print( "Mission started (xml returned)... ")
     return final_xml,reward_goal,reward_intermediate,n_intermediate_rewards,reward_timeout,reward_sendcommand,timeout
 
-
 #--------------------------------------------------------------------------------------
 #-- This class implements the Realistic Agent --#
 class AgentRealistic:
@@ -308,20 +308,34 @@ class AgentRealistic:
         self.solution_report.setMissionType(self.mission_type)
         self.solution_report.setMissionSeed(self.mission_seed)
 
-    #----------------------------------------------------------------------------------------------------------------#
-    def __ExecuteActionForRealisticAgentWithNoisyTransitionModel__(idx_requested_action, noise_level):
+        self.state_table = state_space_graph
+
+    #-- Executes an action with a noisy transition model --#
+    def __ExecuteActionForRealisticAgentWithNoisyTransitionModel__(self, idx_requested_action, noise_level):
         """ Creates a well-defined transition model with a certain noise level """
         n = len(self.AGENT_ALLOWED_ACTIONS)
         pp = noise_level/(n-1) * np.ones((n,1))
-        pp[idx_request_action] = 1.0 - noise_level
+        pp[idx_requested_action] = 1.0 - noise_level
         idx_actual = np.random.choice(n, 1, p=pp.flatten()) # sample from the distribution of actions
         actual_action = self.AGENT_ALLOWED_ACTIONS[int(idx_actual)]
         self.agent_host.sendCommand(actual_action)
         return actual_action
 
-    #----------------------------------------------------------------------------------------------------------------#
+    #-- Take a random action out of equally maximum actions from list --#
+    def getAction(self, actions):
+        max_val = max(actions)
+        max_acts = []
+        n = 0
+        while n < len(actions):
+            if (actions[n] == max_val):
+                max_acts.append(n)
+            n += 1
+
+        action = random.randint(0,len(max_acts)-1)
+        return max_acts[action]
+
+    #-- Main agent logic --#
     def run_agent(self):
-        """ Run the Realistic agent and log the performance and resource use """
 
         #-- Load and init mission --#
         print('Generate and load the ' + self.mission_type + ' mission with seed ' + str(self.mission_seed) + ' allowing ' +  self.AGENT_MOVEMENT_TYPE + ' movements')
@@ -330,13 +344,121 @@ class AgentRealistic:
         time.sleep(1)
         self.solution_report.start()
 
-        # INSERT YOUR SOLUTION HERE (REWARDS MUST BE UPDATED IN THE solution_report)
-        #
-        # NOTICE: YOUR FINAL AGENT MUST MAKE USE OF THE FOLLOWING NOISY TRANSISION MODEL
-        #       ExecuteActionForRealisticAgentWithNoisyTransitionModel(idx_requested_action, 0.05)
-        #   FOR DEVELOPMENT IT IS RECOMMENDED TO FIST USE A NOISE FREE VERSION, i.e.
-        #       ExecuteActionForRealisticAgentWithNoisyTransitionModel(idx_requested_action, 0.0)
+        #-- Define local capabilities of the agent (sensors)--#
+        self.agent_host.setObservationsPolicy(MalmoPython.ObservationsPolicy.LATEST_OBSERVATION_ONLY)
+        self.agent_host.setVideoPolicy(MalmoPython.VideoPolicy.LATEST_FRAME_ONLY)
+        self.agent_host.setRewardsPolicy(MalmoPython.RewardsPolicy.KEEP_ALL_REWARDS)
 
+        #-- Inital variables --#
+        reward_cumulative = 0.0
+        learn_rate = 0.8
+        gamma = 0.95
+        current_xpos = prev_xpos =  None
+        current_zpos = prev_zpos = None
+        current_key = prev_key = None
+        first = True        #We ignore movement penalties from first movement, as it doesn't always work
+
+        #-- Get inital state --#
+        state_t = self.agent_host.getWorldState()
+
+        #-- Get initial percepts --#
+        while state_t.number_of_observations_since_last_state < 1:
+            state_t = self.agent_host.getWorldState()
+            time.sleep(0.1)
+        msg = state_t.observations[-1].text
+        oracle = json.loads(msg)
+        current_xpos = str(int(oracle.get(u'XPos', 0)))
+        current_zpos = str(int(oracle.get(u'ZPos', 0)))
+        current_key = current_xpos + "_" + current_zpos
+
+        #-- Add inital state to state table if not present --#
+        if (current_key not in self.state_table):
+            self.state_table[current_key] = [0,0,0,0]
+
+        #-- Main loop --#
+        while state_t.is_mission_running:
+
+            #Take action
+            actionIdx = None
+            if (state_t.is_mission_running):
+                actionIdx = self.getAction(self.state_table[current_key])
+                print("Requested Action:",self.AGENT_ALLOWED_ACTIONS[actionIdx])
+
+                # Now try to execute the action givne a noisy transition model
+                actual_action = self.__ExecuteActionForRealisticAgentWithNoisyTransitionModel__(actionIdx, 0.1);
+                print("Actual Action:",actual_action)
+
+                #Add action to solution report
+                actionIdx = self.AGENT_ALLOWED_ACTIONS.index(actual_action)
+                self.solution_report.addAction()
+
+                # Wait
+                time.sleep(0.2)
+
+            #Get post-action state
+            state_t = self.agent_host.getWorldState()
+
+            # Collect the number of rewards and add to reward_cumulative
+            rewards = 0
+            for reward_t in state_t.rewards:
+                # Dont include timeout rewards
+                if (reward_t.getValue() > -700):
+                    rewards += reward_t.getValue()
+                reward_cumulative += reward_t.getValue()
+                self.solution_report.addReward(reward_t.getValue(), datetime.datetime.now())
+                print("Reward_t:",reward_t.getValue())
+                print("Cummulative reward so far:",reward_cumulative)
+
+            # Check if anything went wrong along the way
+            for error in state_t.errors:
+                print("Error:",error.text)
+
+            #Switch variables
+            prev_xpos = current_xpos
+            prev_zpos = current_zpos
+            prev_key = current_key
+
+            current_xpos = None
+            current_zpos = None
+            current_key = None
+
+            # Get new percepts
+            current_ypos = pitch = yaw = None
+            if state_t.number_of_observations_since_last_state > 0:
+                msg = state_t.observations[-1].text
+                oracle = json.loads(msg)
+                current_xpos = str(int(oracle.get(u'XPos', 0)))
+                current_ypos = str(int(oracle.get(u'YPos', 0)))
+                current_zpos = str(int(oracle.get(u'ZPos', 0)))
+                pitch = str(int(oracle.get(u'Pitch', 0)))
+                yaw = str(int(oracle.get(u'Yaw', 0)))
+                current_key = current_xpos + "_" + current_zpos
+
+            # If found a new state
+            if (current_key != None and current_key not in self.state_table):
+                self.state_table[current_key] = [0,0,0,0]
+
+            # Add action result to state table
+            if (current_key != None and actionIdx != None):
+                #If movement didn't do anything (wall), give a large negative reward
+                if (current_key == prev_key and state_t.is_mission_running and not first):
+                    self.state_table[prev_key][actionIdx] = -10000
+                else:
+                    self.state_table[prev_key][actionIdx] = self.state_table[prev_key][actionIdx] + learn_rate*(rewards + gamma*max(self.state_table[current_key][:]) - self.state_table[prev_key][actionIdx])
+
+            # Vision
+            if state_t.number_of_video_frames_since_last_state > 0: # Have any Vision percepts been registred ?
+                frame = state_t.video_frames[0]
+
+            #-- Print some of the state information --#
+            print("Percept: video,observations,rewards received:",state_t.number_of_video_frames_since_last_state,state_t.number_of_observations_since_last_state,state_t.number_of_rewards_since_last_state)
+            print("\tcoordinates (x,y,z,yaw,pitch):" + str(current_xpos) + " " + str(current_ypos) + " " + str(current_zpos)+ " " + str(yaw) + " " + str(pitch))
+            first = False
+
+
+        # Summary
+        print("Summary:")
+        print("Cumulative reward = " + str(reward_cumulative) )
         return
 
 #--------------------------------------------------------------------------------------
@@ -358,6 +480,7 @@ class AgentSimple:
         self.solution_report.setMissionType(self.mission_type)
         self.solution_report.setMissionSeed(self.mission_seed)
 
+    #-- Generates a list of actions from a shortest path --#
     def gen_actions(self, path):
         actions = []
         x,z = path[0].split('_')
@@ -384,8 +507,8 @@ class AgentSimple:
             z = z2
         return actions
 
+    #-- Main agent logic --#
     def run_agent(self):
-        """ Run the Simple agent and log the performance and resource use """
 
         #-- Load and init mission --#
         print('Generate and load the ' + self.mission_type + ' mission with seed ' + str(self.mission_seed) + ' allowing ' +  self.AGENT_MOVEMENT_TYPE + ' movements')
@@ -394,25 +517,19 @@ class AgentSimple:
         time.sleep(1)
         self.solution_report.start()
 
+        #-- Inital variables --#
         reward_cumulative = 0.0
-
-        #Graph representing state space
-        graph = self.state_space['graph']
-        #Start node
-        start = self.state_space['start']
-        #End node
-        end = self.state_space['end']
-        #Path to follow
+        graph = self.state_space['graph']       # state space graph
+        start = self.state_space['start']       # start node
+        end = self.state_space['end']           # end node
         path = None
-        #Path in form of actions to take
         action_q = None
 
-        # Main loop:
+        #-- Get inital state --#
         state_t = self.agent_host.getWorldState()
 
+        #-- Main loop --#
         while state_t.is_mission_running:
-            # Wait 0.5 sec
-            time.sleep(1)
 
             # Get the world state
             state_t = self.agent_host.getWorldState()
@@ -429,9 +546,7 @@ class AgentSimple:
                         print(graph.node[a]['rewards']*(-1))
                         return (graph.node[a]['rewards']*(-1))
                 path = nx.astar.astar_path(graph, start, end, heuristic=heuristic)
-                print(nx.astar.astar_path_length(graph, start, end, heuristic=heuristic))
                 action_q = self.gen_actions(path)
-                print(action_q)
 
             #Take action
             if state_t.is_mission_running:
@@ -451,6 +566,7 @@ class AgentSimple:
 
                     #Add action to solution report
                     self.solution_report.addAction()
+                time.sleep(0.2)
 
             # Collect the number of rewards and add to reward_cumulative
             # Note: Since we only observe the sensors and environment every a number of rewards may have accumulated in the buffer
@@ -490,7 +606,6 @@ class AgentSimple:
             print("Percept: video,observations,rewards received:",state_t.number_of_video_frames_since_last_state,state_t.number_of_observations_since_last_state,state_t.number_of_rewards_since_last_state)
             print("\tcoordinates (x,y,z,yaw,pitch):" + str(xpos) + " " + str(ypos) + " " + str(zpos)+ " " + str(yaw) + " " + str(pitch))
 
-        # --------------------------------------------------------------------------------------------
         # Summary
         print("Summary:")
         print("Cumulative reward = " + str(reward_cumulative) )
@@ -515,7 +630,6 @@ class AgentRandom:
         self.solution_report = solution_report;   # Python makes call by reference !
         self.solution_report.setMissionType(self.mission_type)
         self.solution_report.setMissionSeed(self.mission_seed)
-
 
     def __ExecuteActionForRandomAgentWithNoisyTransitionModel__(self, idx_request_action, noise_level):
         """ Creates a well-defined transition model with a certain noise level """
@@ -547,8 +661,6 @@ class AgentRandom:
         state_t = self.agent_host.getWorldState()
 
         while state_t.is_mission_running:
-            # Wait 0.5 sec
-            time.sleep(0.5)
 
             # Get the world state
             state_t = self.agent_host.getWorldState()
@@ -565,6 +677,8 @@ class AgentRandom:
 
                 #Add action to solution report
                 self.solution_report.addAction()
+
+                time.sleep(0.2)
 
             # Collect the number of rewards and add to reward_cumulative
             # Note: Since we only observe the sensors and environment every a number of rewards may have accumulated in the buffer
@@ -830,6 +944,7 @@ if __name__ == "__main__":
 
     print('Instantiate an agent interface/api to Malmo')
     agent_host = MalmoPython.AgentHost()
+    totals = []
 
     #-- Itereate a few different layout of the same mission stype --#
     for i_training_seed in range(0,args.missionseedmax):
@@ -845,6 +960,7 @@ if __name__ == "__main__":
             helper_agent = None
 
         #-- Repeat the same instance (size and seed) multiple times --#
+        persistant_state_space = {}
         for i_rep in range(0,args.nrepeats):
             print('Setup the performance log...')
             solution_report = SolutionReport()
@@ -856,12 +972,23 @@ if __name__ == "__main__":
             if not helper_agent==None:
                 state_space = deepcopy(helper_agent.state_space)
 
+            # If realistic, keep state table from last cycle
+            if args.agentname.lower()=='realistic':
+                state_space = persistant_state_space
+
             agent_to_be_evaluated = eval(agent_name+'(agent_host,args.malmoport,args.missiontype,i_training_seed,solution_report,state_space)')
 
             print('Run the agent, time it and log the performance...')
             solution_report.start() # start the timer (may be overwritten in the agent to provide a fair comparison)
             agent_to_be_evaluated.run_agent()
             solution_report.stop() # stop the timer
+
+            # If realistic update persistant state space
+            if args.agentname.lower()=='realistic':
+                persistant_state_space = agent_to_be_evaluated.state_table
+
+            #
+            totals.append(int(solution_report.reward_cumulative))
 
             print("\n---------------------------------------------")
             print("| Solution Report Summary: ")
@@ -874,7 +1001,7 @@ if __name__ == "__main__":
 
             print('Save the solution report to a specific file for later analysis and reporting...')
             fn_result = args.resultpath + 'solution_' + args.studentguid + '_' + agent_name + '_' +args.missiontype + '_' + str(i_training_seed) + '_' + str(i_rep)
-            foutput = open(fn_result+'.pkl', 'wb')
+            foutput = open(fn_result+'.pkl', 'wb+')
             pickle.dump(agent_to_be_evaluated.solution_report,foutput) # Save the solution information in a specific file, HiNT:  It can be loaded with pickle.load(output) with read permissions to the file
             foutput.close()
 
@@ -887,4 +1014,9 @@ if __name__ == "__main__":
             time.sleep(1)
             print("------------------------------------------------------------------------------\n")
 
+
+
     print("Done")
+    plt.plot(totals)
+    plt.ylabel('reward')
+    plt.show()
