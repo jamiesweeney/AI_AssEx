@@ -351,7 +351,7 @@ class AgentRealistic:
 
         #-- Inital variables --#
         reward_cumulative = 0.0
-        learn_rate = 0.8
+        learn_rate = 0.5
         gamma = 0.95
         current_xpos = prev_xpos =  None
         current_zpos = prev_zpos = None
@@ -392,23 +392,21 @@ class AgentRealistic:
                 actionIdx = self.AGENT_ALLOWED_ACTIONS.index(actual_action)
                 self.solution_report.addAction()
 
-                # Wait
-                time.sleep(0.2)
-
             #Get post-action state
+            time.sleep(0.2)
             state_t = self.agent_host.getWorldState()
 
             # Collect the number of rewards and add to reward_cumulative
             rewards = 0
             for reward_t in state_t.rewards:
                 # Dont include timeout rewards
-                if (reward_t.getValue() > -700):
-                    rewards += reward_t.getValue()
+                #if (reward_t.getValue() > -700):
+                rewards += reward_t.getValue()
+
                 reward_cumulative += reward_t.getValue()
                 self.solution_report.addReward(reward_t.getValue(), datetime.datetime.now())
                 print("Reward_t:",reward_t.getValue())
                 print("Cummulative reward so far:",reward_cumulative)
-
             # Check if anything went wrong along the way
             for error in state_t.errors:
                 print("Error:",error.text)
@@ -424,6 +422,9 @@ class AgentRealistic:
 
             # Get new percepts
             current_ypos = pitch = yaw = None
+            while (state_t.is_mission_running and state_t.number_of_observations_since_last_state < 1):
+                state_t = self.agent_host.getWorldState()
+
             if state_t.number_of_observations_since_last_state > 0:
                 msg = state_t.observations[-1].text
                 oracle = json.loads(msg)
@@ -440,11 +441,7 @@ class AgentRealistic:
 
             # Add action result to state table
             if (current_key != None and actionIdx != None):
-                #If movement didn't do anything (wall), give a large negative reward
-                if (current_key == prev_key and state_t.is_mission_running and not first):
-                    self.state_table[prev_key][actionIdx] = -10000
-                else:
-                    self.state_table[prev_key][actionIdx] = self.state_table[prev_key][actionIdx] + learn_rate*(rewards + gamma*max(self.state_table[current_key][:]) - self.state_table[prev_key][actionIdx])
+                self.state_table[prev_key][actionIdx] = (self.state_table[prev_key][actionIdx]) + (learn_rate)*(rewards + (gamma*max(self.state_table[current_key])) - self.state_table[prev_key][actionIdx])
 
             # Vision
             if state_t.number_of_video_frames_since_last_state > 0: # Have any Vision percepts been registred ?
@@ -530,20 +527,16 @@ class AgentSimple:
 
         #-- Main loop --#
         while state_t.is_mission_running:
-
             # Get the world state
             state_t = self.agent_host.getWorldState()
 
             #If no path generated then make one
             if (path == None):
                 def heuristic(a, b):
-                    print(a)
-                    print(b)
                     if 'in_path' in graph.node[a]:
                         return 0
                     else:
                         graph.node[a]['in_path'] = True
-                        print(graph.node[a]['rewards']*(-1))
                         return (graph.node[a]['rewards']*(-1))
                 path = nx.astar.astar_path(graph, start, end, heuristic=heuristic)
                 action_q = self.gen_actions(path)
@@ -566,8 +559,9 @@ class AgentSimple:
 
                     #Add action to solution report
                     self.solution_report.addAction()
-                time.sleep(0.2)
+            time.sleep(0.2)
 
+            state_t = self.agent_host.getWorldState()
             # Collect the number of rewards and add to reward_cumulative
             # Note: Since we only observe the sensors and environment every a number of rewards may have accumulated in the buffer
             for reward_t in state_t.rewards:
@@ -678,7 +672,8 @@ class AgentRandom:
                 #Add action to solution report
                 self.solution_report.addAction()
 
-                time.sleep(0.2)
+            time.sleep(0.2)
+            state_t = self.agent_host.getWorldState()
 
             # Collect the number of rewards and add to reward_cumulative
             # Note: Since we only observe the sensors and environment every a number of rewards may have accumulated in the buffer
@@ -1012,11 +1007,12 @@ if __name__ == "__main__":
 
             print('Sleep a sec to make sure the client is ready for next mission/agent variation...')
             time.sleep(1)
+            print ("Iteration: " + str(i_rep))
             print("------------------------------------------------------------------------------\n")
 
 
 
     print("Done")
+    print (totals)
     plt.plot(totals)
-    plt.ylabel('reward')
     plt.show()
