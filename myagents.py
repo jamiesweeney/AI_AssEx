@@ -2,7 +2,7 @@
  Artificial Inteligence (H)
  Assessed Exercise 2017/2018
 
- Tested with Python 2.7
+ Tested with Python 3.6
 
  Team 30
  Cameron Harper
@@ -308,6 +308,7 @@ class AgentRealistic:
         self.solution_report.setMissionType(self.mission_type)
         self.solution_report.setMissionSeed(self.mission_seed)
 
+        #this is previously computed MDP
         self.state_table = state_space_graph
 
     #-- Executes an action with a noisy transition model --#
@@ -1011,6 +1012,7 @@ if __name__ == "__main__":
 
 
 
+    # Will plot rewards when done
     print("Done")
     print (totals)
     plt.plot(totals)
